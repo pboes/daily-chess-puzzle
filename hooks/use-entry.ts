@@ -3,6 +3,7 @@
 import * as React from "react";
 import { useWallet } from "@/components/wallet/wallet-provider";
 import { getPermissionlessGroup } from "@/lib/permissionless-group";
+import { buildEntryTransferTxs } from "@/lib/entry-transfer";
 import { ENTRY_FEE_ATTO, ENTRY_FEE_CRC, ORG_ADDRESS } from "@/lib/circles-config";
 
 type EntryPhase =
@@ -150,11 +151,7 @@ export function useEntry(): UseEntryResult {
       }
 
       setPhase("building");
-      const { txs } = await group.transferGroupCrc({
-        avatar,
-        to: ORG_ADDRESS,
-        amount: ENTRY_FEE_ATTO,
-      });
+      const txs = await buildEntryTransferTxs(group, avatar, ORG_ADDRESS, ENTRY_FEE_ATTO);
 
       setPhase("signing");
       const hashes = await sendTransactions(txs.map(toTx));
