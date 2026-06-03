@@ -46,6 +46,10 @@ export function useChessPuzzle(puzzle: DailyPuzzle | null): UseChessPuzzleResult
   const startTimeRef = React.useRef<number | null>(null);
   const rafRef = React.useRef<number | null>(null);
   const solveIndexRef = React.useRef(0); // index into puzzle.solution
+  // Lives tracked in a ref too, so rapid wrong moves decrement correctly even
+  // before React re-renders (a stale `lives` closure could otherwise miss the
+  // 3rd loss and never trigger "failed").
+  const livesRef = React.useRef(STARTING_LIVES);
 
   // Solver plays even indices of the solution; opponent the odd ones.
   const totalSolverMoves = puzzle
@@ -73,6 +77,7 @@ export function useChessPuzzle(puzzle: DailyPuzzle | null): UseChessPuzzleResult
     if (!puzzle) return;
     resetBoard();
     setStatus("ready");
+    livesRef.current = STARTING_LIVES;
     setLives(STARTING_LIVES);
     setElapsedMs(0);
     startTimeRef.current = null;
@@ -99,6 +104,7 @@ export function useChessPuzzle(puzzle: DailyPuzzle | null): UseChessPuzzleResult
     (startedAtEpoch?: number) => {
       if (!puzzle || status === "playing") return;
       resetBoard();
+      livesRef.current = STARTING_LIVES;
       setLives(STARTING_LIVES);
       const t = startedAtEpoch ?? Date.now();
       startTimeRef.current = t;
@@ -136,8 +142,9 @@ export function useChessPuzzle(puzzle: DailyPuzzle | null): UseChessPuzzleResult
 
       if (!correct) {
         game.undo();
-        const remaining = lives - 1;
-        setLives(remaining);
+        livesRef.current -= 1;
+        const remaining = livesRef.current;
+        setLives(Math.max(0, remaining));
         setLastWasWrong(true);
         setTimeout(() => setLastWasWrong(false), 500);
         if (remaining <= 0) {
@@ -183,7 +190,7 @@ export function useChessPuzzle(puzzle: DailyPuzzle | null): UseChessPuzzleResult
 
       return true;
     },
-    [puzzle, status, isOpponentMoving, lives, resetBoard]
+    [puzzle, status, isOpponentMoving, resetBoard]
   );
 
   return {

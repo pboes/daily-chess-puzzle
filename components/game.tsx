@@ -353,7 +353,11 @@ function GateContent({
         </p>
         {entry.balanceCrc != null && (
           <p className="text-xs text-[var(--muted-foreground)]">
-            Spendable: {entry.balanceCrc} gCRC
+            Balance:{" "}
+            {Number(
+              (entry.balanceCrc + (entry.migratableCrc ?? 0)).toFixed(2)
+            )}{" "}
+            gCRC
           </p>
         )}
         <Button

@@ -3,7 +3,7 @@
 import * as React from "react";
 import { useWallet } from "@/components/wallet/wallet-provider";
 import { getPermissionlessGroup } from "@/lib/permissionless-group";
-import { buildEntryTransferTxs } from "@/lib/entry-transfer";
+import { buildEntryTransferTxs, type SimpleTx } from "@/lib/entry-transfer";
 import { ENTRY_FEE_ATTO, ENTRY_FEE_CRC, ORG_ADDRESS } from "@/lib/circles-config";
 
 type EntryPhase =
@@ -34,7 +34,6 @@ interface UseEntryResult {
 }
 
 const atto = (v: bigint) => Number(v / 10n ** 12n) / 1e6;
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const toTx = (t: { to: unknown; data?: unknown; value?: unknown }) => ({
   to: t.to as string,
   data: (t.data ?? "0x") as string,
@@ -105,26 +104,35 @@ export function useEntry(): UseEntryResult {
       const group = getPermissionlessGroup();
 
       setPhase("checking");
-      let bal = await group.balance(avatar);
+      const bal = await group.balance(avatar);
       setBalanceCrc(atto(bal.heldTotal));
       setMigratableCrc(atto(bal.migratable));
 
-      // If the held balance can't cover the fee, migrate just enough in-app
-      // (legacy CRC → score group) before paying — no Circles App detour.
-      if (bal.heldTotal < ENTRY_FEE_ATTO) {
+      // Build the whole entry as a SINGLE batch the host signs once. If the
+      // held balance can't cover the fee, prepend an in-app migration (legacy
+      // CRC → score group) — it mints native group-CRC to the avatar, which the
+      // appended transfer then spends, all atomically. No Circles App detour,
+      // and no second signature.
+      let txs: SimpleTx[];
+      if (bal.heldTotal >= ENTRY_FEE_ATTO) {
+        setPhase("building");
+        txs = await buildEntryTransferTxs(group, avatar, ORG_ADDRESS, ENTRY_FEE_ATTO);
+      } else {
         if (bal.heldTotal + bal.migratable < ENTRY_FEE_ATTO) {
           setPhase("insufficient");
           setError(
             `You need ${ENTRY_FEE_CRC} group-CRC to enter, but only ${atto(
-              bal.heldTotal
-            )} is spendable (even after migrating ${atto(bal.migratable)}).`
+              bal.heldTotal + bal.migratable
+            )} is available.`
           );
           return;
         }
 
         setPhase("migrating");
-        const needed = ENTRY_FEE_ATTO - bal.heldTotal;
-        const migTarget = needed + needed / 5n; // 20% buffer for routing/demurrage slip
+        // Migrate the shortfall (beyond what's held) + 20% buffer, capped at
+        // what's actually migratable.
+        let migTarget = ENTRY_FEE_ATTO - bal.heldTotal + ENTRY_FEE_ATTO / 5n;
+        if (migTarget > bal.migratable) migTarget = bal.migratable;
         const mig = await group.migration({ avatar, amount: migTarget });
         if (mig.amount === 0n || mig.txs.length === 0) {
           setPhase("insufficient");
@@ -133,28 +141,19 @@ export function useEntry(): UseEntryResult {
           );
           return;
         }
-        await sendTransactions(mig.txs.map(toTx));
-
-        // Confirm the migration landed (poll held balance briefly).
-        for (let i = 0; i < 6; i++) {
-          bal = await group.balance(avatar);
-          setBalanceCrc(atto(bal.heldTotal));
-          setMigratableCrc(atto(bal.migratable));
-          if (bal.heldTotal >= ENTRY_FEE_ATTO) break;
-          await sleep(2500);
-        }
-        if (bal.heldTotal < ENTRY_FEE_ATTO) {
-          setPhase("error");
-          setError("Migration didn't bring in enough spendable CRC yet — please try again.");
-          return;
-        }
+        // Entry transfer accounting for the native the migration will mint.
+        const entryTxs = await buildEntryTransferTxs(
+          group,
+          avatar,
+          ORG_ADDRESS,
+          ENTRY_FEE_ATTO,
+          mig.amount
+        );
+        txs = [...mig.txs.map(toTx), ...entryTxs];
       }
 
-      setPhase("building");
-      const txs = await buildEntryTransferTxs(group, avatar, ORG_ADDRESS, ENTRY_FEE_ATTO);
-
       setPhase("signing");
-      const hashes = await sendTransactions(txs.map(toTx));
+      const hashes = await sendTransactions(txs);
 
       setPhase("verifying");
       let ok = false;

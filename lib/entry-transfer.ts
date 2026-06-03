@@ -46,15 +46,24 @@ export async function buildEntryTransferTxs(
   group: PermissionlessGroup,
   avatar: Address,
   org: Address,
-  feeAtto: bigint
+  feeAtto: bigint,
+  /**
+   * Native group-CRC that a *preceding* batch step (a migration) will mint to
+   * the avatar before this transfer runs. Lets us bundle migration + payment
+   * into one atomic, single-signature batch: we account for that native here so
+   * we only unwrap whatever's still short.
+   */
+  extraNativeAtto = 0n
 ): Promise<SimpleTx[]> {
   const bd = await group.balanceBreakdown(avatar);
   // Hub token id of a group == uint256(uint160(groupAddress)).
   const tokenId = BigInt(SCORE_GROUP_ADDRESS);
   const txs: SimpleTx[] = [];
 
-  // How much native ERC1155 we still need to cover the fee.
-  let need = feeAtto > bd.erc1155 ? feeAtto - bd.erc1155 : 0n;
+  // How much native ERC1155 we still need to cover the fee (counting native the
+  // migration step will add).
+  const availableNative = bd.erc1155 + extraNativeAtto;
+  let need = feeAtto > availableNative ? feeAtto - availableNative : 0n;
 
   // Cover from the demurrage wrapper (1:1 demurraged units).
   if (need > 0n && bd.demurrageWrapper > 0n) {
