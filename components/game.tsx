@@ -35,6 +35,9 @@ export function Game() {
   const [attemptLoaded, setAttemptLoaded] = React.useState(false);
   const [starting, setStarting] = React.useState(false);
   const finishedRef = React.useRef(false);
+  // The in-flight "record start" request. Finish must await this so it can't
+  // race the start write (which would clobber the attempt → stuck "playing").
+  const startPromiseRef = React.useRef<Promise<void> | null>(null);
   const howto = useHowToPlay();
 
   const game = useChessPuzzle(puzzle);
@@ -91,19 +94,22 @@ export function Game() {
     setStarting(true);
     finishedRef.current = false;
     game.start(); // instant — local clock; server anchors the official time
-    try {
-      const res = await fetch("/api/attempt/start", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ address }),
-      });
-      const data = await res.json();
-      if (res.ok && data.attempt) setAttempt(data.attempt);
-    } catch {
-      /* clock is already running; finish will retry to record it */
-    } finally {
-      setStarting(false);
-    }
+    const p = (async () => {
+      try {
+        const res = await fetch("/api/attempt/start", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ address }),
+        });
+        const data = await res.json();
+        if (res.ok && data.attempt) setAttempt(data.attempt);
+      } catch {
+        /* clock is already running; finish awaits this then records it */
+      }
+    })();
+    startPromiseRef.current = p;
+    await p;
+    setStarting(false);
   }, [address, starting, game]);
 
   // Finalize the attempt server-side exactly once when it ends. Retry on
@@ -117,6 +123,14 @@ export function Game() {
     const lives = game.lives;
     let cancelled = false;
     (async () => {
+      // Ensure the start was recorded before finishing, so they can't race.
+      if (startPromiseRef.current) {
+        try {
+          await startPromiseRef.current;
+        } catch {
+          /* ignore — retry loop below still attempts to finish */
+        }
+      }
       for (let attemptNo = 0; attemptNo < 6 && !cancelled; attemptNo++) {
         try {
           const res = await fetch("/api/attempt/finish", {

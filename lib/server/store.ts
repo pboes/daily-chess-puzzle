@@ -18,6 +18,7 @@
  *
  * Keys are namespaced by UTC day so each day is an isolated competition.
  */
+import type { DailyPuzzle } from "@/lib/puzzle";
 
 export interface Entry {
   /** Player Safe / avatar address (lowercased). */
@@ -62,6 +63,9 @@ export interface StoreBackend {
     outcome: { solved: boolean; lives: number; finishedAt: number }
   ): Promise<Attempt | null>;
   listAttempts(day: string): Promise<Attempt[]>;
+  /** The puzzle locked in for a day (so it's stable for everyone), or null. */
+  getPuzzle(day: string): Promise<DailyPuzzle | null>;
+  setPuzzle(day: string, puzzle: DailyPuzzle): Promise<void>;
   /** All day keys present in the store (for catch-up settlement). */
   listDays(): Promise<string[]>;
   isPaidOut(day: string): Promise<boolean>;
@@ -81,9 +85,10 @@ interface StoreDoc {
   >;
   usedTx: string[];
   paidOut: Record<string, Record<string, unknown>>;
+  puzzles: Record<string, DailyPuzzle>;
 }
 
-const emptyDoc = (): StoreDoc => ({ days: {}, usedTx: [], paidOut: {} });
+const emptyDoc = (): StoreDoc => ({ days: {}, usedTx: [], paidOut: {}, puzzles: {} });
 
 function dayBucket(doc: StoreDoc, day: string) {
   if (!doc.days[day]) doc.days[day] = { entries: {}, attempts: {} };
@@ -156,22 +161,34 @@ abstract class JsonDocBackend implements StoreBackend {
     address: string,
     outcome: { solved: boolean; lives: number; finishedAt: number }
   ) {
+    // Don't write at all unless there's a live attempt to finalize — a blind
+    // read-modify-write here could clobber a concurrent start that just wrote
+    // the 'started' attempt (leaving the player stuck as "playing").
+    const pre = (await this.load()).days[day]?.attempts[address];
+    if (!pre) return null;
+    if (pre.status !== "started") return pre;
     return this.mutate((doc) => {
       const a = doc.days[day]?.attempts[address];
-      if (!a) return null;
-      // Finalize once; ignore late/duplicate finishes.
-      if (a.status === "started") {
-        a.status = outcome.solved ? "solved" : "failed";
-        a.finishedAt = outcome.finishedAt;
-        a.lives = outcome.lives;
-        if (outcome.solved) a.timeMs = outcome.finishedAt - a.startedAt;
-      }
+      if (!a || a.status !== "started") return a ?? null;
+      a.status = outcome.solved ? "solved" : "failed";
+      a.finishedAt = outcome.finishedAt;
+      a.lives = outcome.lives;
+      if (outcome.solved) a.timeMs = outcome.finishedAt - a.startedAt;
       return a;
     });
   }
   async listAttempts(day: string) {
     const doc = await this.load();
     return Object.values(doc.days[day]?.attempts ?? {});
+  }
+  async getPuzzle(day: string) {
+    const doc = await this.load();
+    return doc.puzzles[day] ?? null;
+  }
+  async setPuzzle(day: string, puzzle: DailyPuzzle) {
+    await this.mutate((doc) => {
+      if (!doc.puzzles[day]) doc.puzzles[day] = puzzle; // lock once per day
+    });
   }
   async listDays() {
     const doc = await this.load();
@@ -278,6 +295,7 @@ function normalize(d: Partial<StoreDoc>): StoreDoc {
     days: d.days ?? {},
     usedTx: d.usedTx ?? [],
     paidOut: d.paidOut ?? {},
+    puzzles: d.puzzles ?? {},
   };
 }
 
