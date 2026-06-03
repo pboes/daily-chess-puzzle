@@ -36,7 +36,7 @@ export function Header() {
           {hasLogo ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
-              src="/logo.png"
+              src="/chess-puzzle-avatar-512.png"
               alt="Daily Chess Duel"
               className="h-full w-full object-cover"
               onError={() => setHasLogo(false)}

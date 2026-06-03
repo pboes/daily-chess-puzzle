@@ -16,12 +16,14 @@ export const metadata: Metadata = {
   title: "Daily Chess Duel — Circles Mini-App",
   description:
     "Solve the daily chess puzzle as fast as you can. Pay to enter with Circles, fastest solve wins the pot.",
-  // Uses /logo.png from the public/ folder once you add it (see README).
-  icons: { icon: "/logo.png", apple: "/logo.png" },
+  icons: {
+    icon: "/chess-puzzle-avatar-512.png",
+    apple: "/chess-puzzle-avatar-512.png",
+  },
   openGraph: {
     title: "Daily Chess Duel",
     description: "Fastest solve wins the pot. A Circles mini-app.",
-    images: ["/logo.png"],
+    images: ["/chess-puzzle-avatar-512.png"],
   },
 };
 
