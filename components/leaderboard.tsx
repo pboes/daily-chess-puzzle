@@ -183,7 +183,7 @@ export function Leaderboard({
                   {isMe && <Badge>you</Badge>}
                 </div>
                 {dnf ? (
-                  <Badge variant="danger">DNF</Badge>
+                  <Badge variant="danger">Out of lives</Badge>
                 ) : playing ? (
                   <Badge variant="muted">Playing…</Badge>
                 ) : (
@@ -199,14 +199,14 @@ export function Leaderboard({
             {me.status === "solved"
               ? `Your time today: rank #${me.rank} · ${formatTime(me.timeMs ?? 0)}`
               : me.status === "failed"
-                ? "You're out of lives today — DNF. Back tomorrow!"
+                ? "You're out of lives today. Back tomorrow!"
                 : "You're entered — finish your attempt to lock in a time."}
           </p>
         )}
         <p className="pt-1 text-center text-[11px] text-[var(--muted-foreground)]/70">
           {data?.entrants ?? 0} entrant(s) · {data?.solvers ?? 0} solved
           {data && data.playing > 0 ? ` · ${data.playing} playing` : ""}
-          {data && data.dnf > 0 ? ` · ${data.dnf} DNF` : ""}
+          {data && data.dnf > 0 ? ` · ${data.dnf} out of lives` : ""}
         </p>
       </CardContent>
     </Card>
