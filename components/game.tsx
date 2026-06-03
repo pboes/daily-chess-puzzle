@@ -309,7 +309,9 @@ function GateContent({
 
   // Connected but not entered → pay gate.
   if (!entry.entered) {
-    const busy = ["checking", "building", "signing", "verifying"].includes(entry.phase);
+    const busy = ["checking", "migrating", "building", "signing", "verifying"].includes(
+      entry.phase
+    );
     return (
       <div className="space-y-3">
         <Coins className="mx-auto h-9 w-9 text-[var(--accent)]" />
@@ -321,9 +323,9 @@ function GateContent({
         {entry.balanceCrc != null && (
           <p className="text-xs text-[var(--muted-foreground)]">
             Spendable: {entry.balanceCrc} gCRC
-            {entry.migratableCrc != null && entry.migratableCrc > 0 && (
+            {entry.needsMigration && (
               <span className="block text-[11px] opacity-80">
-                + {entry.migratableCrc} migratable (migrate in the Circles app to use)
+                We&apos;ll migrate ~{entry.feeCrc} gCRC of your CRC to cover the entry.
               </span>
             )}
           </p>
@@ -342,7 +344,9 @@ function GateContent({
           ) : (
             <>
               <Coins className="h-4 w-4" />
-              Pay {entry.feeCrc} CRC &amp; Play
+              {entry.needsMigration
+                ? `Migrate & Play (${entry.feeCrc} gCRC)`
+                : `Pay ${entry.feeCrc} gCRC & Play`}
             </>
           )}
         </Button>
@@ -386,6 +390,8 @@ function phaseLabel(phase: string): string {
   switch (phase) {
     case "checking":
       return "Checking balance…";
+    case "migrating":
+      return "Migrating CRC…";
     case "building":
       return "Preparing transfer…";
     case "signing":

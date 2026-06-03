@@ -9,6 +9,7 @@ type EntryPhase =
   | "idle"
   | "checking"
   | "insufficient"
+  | "migrating"
   | "building"
   | "signing"
   | "verifying"
@@ -18,19 +19,26 @@ type EntryPhase =
 interface UseEntryResult {
   phase: EntryPhase;
   entered: boolean;
-  /** Player's directly-spendable group-CRC (held, not migratable). null until checked. */
+  /** Directly-spendable group-CRC (held). null until checked. */
   balanceCrc: number | null;
-  /** Legacy CRC that's migratable into the group but not yet spendable. */
+  /** Legacy CRC migratable into the group — only relevant when held < fee. */
   migratableCrc: number | null;
+  /** True when held < fee but held + migratable ≥ fee (we'll migrate first). */
+  needsMigration: boolean;
   feeCrc: number;
   error: string | null;
-  /** Re-read the on-chain balance. */
   refreshBalance: () => Promise<void>;
-  /** Pay the entry fee and register for today. */
+  /** Pay the entry fee (migrating in-app first if needed) and register. */
   payAndEnter: () => Promise<void>;
 }
 
 const atto = (v: bigint) => Number(v / 10n ** 12n) / 1e6;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const toTx = (t: { to: unknown; data?: unknown; value?: unknown }) => ({
+  to: t.to as string,
+  data: (t.data ?? "0x") as string,
+  value: (t.value ?? "0").toString(),
+});
 
 export function useEntry(): UseEntryResult {
   const { address, sendTransactions } = useWallet();
@@ -45,7 +53,6 @@ export function useEntry(): UseEntryResult {
     try {
       const group = getPermissionlessGroup();
       const bal = await group.balance(address as `0x${string}`);
-      // Spendable = what's actually held in the group (NOT migratable legacy CRC).
       setBalanceCrc(atto(bal.heldTotal));
       setMigratableCrc(atto(bal.migratable));
     } catch (err) {
@@ -54,11 +61,11 @@ export function useEntry(): UseEntryResult {
     }
   }, [address]);
 
-  // Check existing entry + balance when the wallet connects.
   React.useEffect(() => {
     if (!address) {
       setEntered(false);
       setBalanceCrc(null);
+      setMigratableCrc(null);
       setPhase("idle");
       return;
     }
@@ -91,49 +98,68 @@ export function useEntry(): UseEntryResult {
       setPhase("error");
       return;
     }
+    const avatar = address as `0x${string}`;
     setError(null);
     try {
       const group = getPermissionlessGroup();
 
       setPhase("checking");
-      const bal = await group.balance(address as `0x${string}`);
+      let bal = await group.balance(avatar);
       setBalanceCrc(atto(bal.heldTotal));
       setMigratableCrc(atto(bal.migratable));
-      // Only the held balance can be transferred; migratable legacy CRC must be
-      // migrated into the group first (done in the Circles app).
+
+      // If the held balance can't cover the fee, migrate just enough in-app
+      // (legacy CRC → score group) before paying — no Circles App detour.
       if (bal.heldTotal < ENTRY_FEE_ATTO) {
-        setPhase("insufficient");
-        const migHint =
-          bal.migratable > 0n
-            ? ` You have ${atto(bal.migratable)} migratable CRC — migrate it in the Circles app first to use it.`
-            : "";
-        setError(
-          `You need ${ENTRY_FEE_CRC} spendable group-CRC to enter, but only ${atto(
-            bal.heldTotal
-          )} is available.${migHint}`
-        );
-        return;
+        if (bal.heldTotal + bal.migratable < ENTRY_FEE_ATTO) {
+          setPhase("insufficient");
+          setError(
+            `You need ${ENTRY_FEE_CRC} group-CRC to enter, but only ${atto(
+              bal.heldTotal
+            )} is spendable (even after migrating ${atto(bal.migratable)}).`
+          );
+          return;
+        }
+
+        setPhase("migrating");
+        const needed = ENTRY_FEE_ATTO - bal.heldTotal;
+        const migTarget = needed + needed / 5n; // 20% buffer for routing/demurrage slip
+        const mig = await group.migration({ avatar, amount: migTarget });
+        if (mig.amount === 0n || mig.txs.length === 0) {
+          setPhase("insufficient");
+          setError(
+            "Couldn't route enough migratable CRC to cover the entry. Try a wallet with more group-CRC."
+          );
+          return;
+        }
+        await sendTransactions(mig.txs.map(toTx));
+
+        // Confirm the migration landed (poll held balance briefly).
+        for (let i = 0; i < 6; i++) {
+          bal = await group.balance(avatar);
+          setBalanceCrc(atto(bal.heldTotal));
+          setMigratableCrc(atto(bal.migratable));
+          if (bal.heldTotal >= ENTRY_FEE_ATTO) break;
+          await sleep(2500);
+        }
+        if (bal.heldTotal < ENTRY_FEE_ATTO) {
+          setPhase("error");
+          setError("Migration didn't bring in enough spendable CRC yet — please try again.");
+          return;
+        }
       }
 
       setPhase("building");
       const { txs } = await group.transferGroupCrc({
-        avatar: address as `0x${string}`,
+        avatar,
         to: ORG_ADDRESS,
         amount: ENTRY_FEE_ATTO,
       });
 
       setPhase("signing");
-      const hashes = await sendTransactions(
-        txs.map((t) => ({
-          to: t.to as string,
-          data: (t.data ?? "0x") as string,
-          value: (t.value ?? "0").toString(),
-        }))
-      );
+      const hashes = await sendTransactions(txs.map(toTx));
 
       setPhase("verifying");
-      // The host returns the batch tx hash(es); try each until the server
-      // confirms the CRC transfer into the org.
       let ok = false;
       let lastErr = "Payment could not be verified.";
       for (const hash of hashes) {
@@ -164,11 +190,17 @@ export function useEntry(): UseEntryResult {
     }
   }, [address, sendTransactions, refreshBalance]);
 
+  const needsMigration =
+    balanceCrc != null &&
+    balanceCrc < ENTRY_FEE_CRC &&
+    balanceCrc + (migratableCrc ?? 0) >= ENTRY_FEE_CRC;
+
   return {
     phase,
     entered,
     balanceCrc,
     migratableCrc,
+    needsMigration,
     feeCrc: ENTRY_FEE_CRC,
     error,
     refreshBalance,
