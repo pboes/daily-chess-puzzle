@@ -39,9 +39,12 @@ interface LeaderboardData {
 export function Leaderboard({
   address,
   refreshKey,
+  pendingMe,
 }: {
   address: string | null;
   refreshKey: number;
+  /** The player's just-finished solve, shown instantly before the server reload. */
+  pendingMe?: { address: string; timeMs: number } | null;
 }) {
   const [data, setData] = React.useState<LeaderboardData | null>(null);
   const [profiles, setProfiles] = React.useState<Record<string, Profile>>({});
@@ -65,10 +68,9 @@ export function Leaderboard({
   // Resolve Circles profiles for any new addresses on the board (cached, so the
   // 15s poll doesn't re-fetch avatars we already have).
   React.useEffect(() => {
-    const rows = data?.leaderboard ?? [];
-    const missing = rows
-      .map((r) => r.address)
-      .filter((a) => !(a in profiles));
+    const addrs = (data?.leaderboard ?? []).map((r) => r.address);
+    if (pendingMe) addrs.push(pendingMe.address);
+    const missing = addrs.filter((a) => !(a in profiles));
     if (missing.length === 0) return;
     (async () => {
       try {
@@ -79,10 +81,40 @@ export function Leaderboard({
         /* leave addresses unresolved; we fall back to the short address */
       }
     })();
-  }, [data, profiles]);
+  }, [data, profiles, pendingMe?.address]);
 
-  const me = data?.me;
   const myAddr = address?.toLowerCase();
+
+  // Merge the player's just-finished solve in immediately (optimistic), so they
+  // see their result before the server reload reconciles the exact ranking.
+  const rows = React.useMemo<Row[]>(() => {
+    const base = data?.leaderboard ?? [];
+    if (!pendingMe) return base;
+    if (base.some((r) => r.address === pendingMe.address && r.status === "solved")) {
+      return base;
+    }
+    const withoutMe = base.filter((r) => r.address !== pendingMe.address);
+    const merged: Row[] = [
+      ...withoutMe,
+      { rank: null, address: pendingMe.address, timeMs: pendingMe.timeMs, status: "solved" },
+    ];
+    const solved = merged
+      .filter((r) => r.status === "solved")
+      .sort((a, b) => (a.timeMs ?? 0) - (b.timeMs ?? 0))
+      .map((r, i) => ({ ...r, rank: i + 1 }));
+    const rest = merged.filter((r) => r.status !== "solved");
+    return [...solved, ...rest];
+  }, [data, pendingMe]);
+
+  const me =
+    data?.me ??
+    (pendingMe
+      ? {
+          rank: rows.find((r) => r.address === pendingMe.address)?.rank ?? null,
+          timeMs: pendingMe.timeMs,
+          status: "solved" as Status,
+        }
+      : null);
 
   return (
     <Card>
@@ -110,12 +142,12 @@ export function Leaderboard({
             )}
           </p>
         )}
-        {!data || data.leaderboard.length === 0 ? (
+        {rows.length === 0 ? (
           <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">
             No entrants yet today. Be the first to claim the pot.
           </p>
         ) : (
-          data.leaderboard.map((row) => {
+          rows.map((row) => {
             const isMe = row.address === myAddr;
             const dnf = row.status === "failed";
             const playing = row.status === "playing";

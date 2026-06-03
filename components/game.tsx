@@ -10,9 +10,10 @@ import { Leaderboard } from "@/components/leaderboard";
 import { useWallet } from "@/components/wallet/wallet-provider";
 import { useEntry } from "@/hooks/use-entry";
 import { useChessPuzzle } from "@/hooks/use-chess-puzzle";
+import { HowToPlayModal, useHowToPlay } from "@/components/how-to-play";
 import { type DailyPuzzle } from "@/lib/puzzle";
 import { formatTime } from "@/lib/utils";
-import { Coins, Loader2, Play, Sparkles, Wallet, XCircle } from "lucide-react";
+import { Coins, HelpCircle, Loader2, Play, Sparkles, Wallet, XCircle } from "lucide-react";
 
 interface Attempt {
   address: string;
@@ -34,6 +35,7 @@ export function Game() {
   const [attemptLoaded, setAttemptLoaded] = React.useState(false);
   const [starting, setStarting] = React.useState(false);
   const finishedRef = React.useRef(false);
+  const howto = useHowToPlay();
 
   const game = useChessPuzzle(puzzle);
 
@@ -81,10 +83,14 @@ export function Game() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [address, entry.entered, puzzle]);
 
-  // Begin the one attempt: ask the server to stamp the start, then run the clock.
+  // Begin the one attempt. Start the clock OPTIMISTICALLY for instant feedback,
+  // then record the start server-side in the background (the official time is
+  // computed from the server's startedAt, which lands ~immediately after).
   const onStart = React.useCallback(async () => {
     if (!address || starting) return;
     setStarting(true);
+    finishedRef.current = false;
+    game.start(); // instant — local clock; server anchors the official time
     try {
       const res = await fetch("/api/attempt/start", {
         method: "POST",
@@ -92,13 +98,9 @@ export function Game() {
         body: JSON.stringify({ address }),
       });
       const data = await res.json();
-      if (res.ok && data.attempt) {
-        setAttempt(data.attempt);
-        if (data.attempt.status === "started") {
-          finishedRef.current = false;
-          game.start(data.attempt.startedAt);
-        }
-      }
+      if (res.ok && data.attempt) setAttempt(data.attempt);
+    } catch {
+      /* clock is already running; finish will retry to record it */
     } finally {
       setStarting(false);
     }
@@ -147,6 +149,16 @@ export function Game() {
       ? attempt
       : null;
   const showOverlay = game.status !== "playing";
+
+  // Show the player's solve on the leaderboard immediately (optimistic), before
+  // the server round-trip lands. Server data reconciles the exact rank/time.
+  const pendingMe =
+    address && game.status === "solved"
+      ? {
+          address: address.toLowerCase(),
+          timeMs: attempt?.timeMs ?? Math.round(game.elapsedMs),
+        }
+      : null;
 
   return (
     <div className="mx-auto grid w-full max-w-5xl gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
@@ -208,6 +220,7 @@ export function Game() {
                   attemptLoaded={attemptLoaded}
                   starting={starting}
                   onStart={onStart}
+                  onHowTo={howto.openModal}
                 />
               </Overlay>
             )}
@@ -224,8 +237,10 @@ export function Game() {
 
       {/* ---- Side column ---- */}
       <div className="space-y-5">
-        <Leaderboard address={address} refreshKey={lbKey} />
+        <Leaderboard address={address} refreshKey={lbKey} pendingMe={pendingMe} />
       </div>
+
+      <HowToPlayModal open={howto.open} onClose={howto.close} />
     </div>
   );
 }
@@ -274,6 +289,7 @@ function GateContent({
   attemptLoaded,
   starting,
   onStart,
+  onHowTo,
 }: {
   liveStatus: string;
   liveElapsedMs: number;
@@ -284,6 +300,7 @@ function GateContent({
   attemptLoaded: boolean;
   starting: boolean;
   onStart: () => void;
+  onHowTo: () => void;
 }) {
   // End-of-attempt this session.
   if (liveStatus === "solved") return <Solved timeMs={liveElapsedMs} />;
@@ -323,11 +340,6 @@ function GateContent({
         {entry.balanceCrc != null && (
           <p className="text-xs text-[var(--muted-foreground)]">
             Spendable: {entry.balanceCrc} gCRC
-            {entry.needsMigration && (
-              <span className="block text-[11px] opacity-80">
-                We&apos;ll migrate ~{entry.feeCrc} gCRC of your CRC to cover the entry.
-              </span>
-            )}
           </p>
         )}
         <Button
@@ -344,12 +356,16 @@ function GateContent({
           ) : (
             <>
               <Coins className="h-4 w-4" />
-              {entry.needsMigration
-                ? `Migrate & Play (${entry.feeCrc} gCRC)`
-                : `Pay ${entry.feeCrc} gCRC & Play`}
+              Pay {entry.feeCrc} gCRC &amp; Play
             </>
           )}
         </Button>
+        <button
+          onClick={onHowTo}
+          className="inline-flex items-center gap-1 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+        >
+          <HelpCircle className="h-3.5 w-3.5" /> How does it work?
+        </button>
         {entry.error && <p className="text-xs text-[var(--destructive)]">{entry.error}</p>}
       </div>
     );
@@ -369,19 +385,16 @@ function GateContent({
         A wrong move costs a life and resets the board — but the clock starts the
         instant you press play and never stops, even if you reload. So be ready.
       </p>
-      <Button className="w-full" disabled={starting} onClick={onStart}>
-        {starting ? (
-          <>
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Starting…
-          </>
-        ) : (
-          <>
-            <Play className="h-4 w-4" />
-            Start the clock
-          </>
-        )}
+      <Button className="w-full" onClick={onStart}>
+        <Play className="h-4 w-4" />
+        Start the clock
       </Button>
+      <button
+        onClick={onHowTo}
+        className="inline-flex items-center gap-1 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+      >
+        <HelpCircle className="h-3.5 w-3.5" /> How does it work?
+      </button>
     </div>
   );
 }
@@ -391,7 +404,7 @@ function phaseLabel(phase: string): string {
     case "checking":
       return "Checking balance…";
     case "migrating":
-      return "Migrating CRC…";
+      return "Preparing your CRC…";
     case "building":
       return "Preparing transfer…";
     case "signing":
