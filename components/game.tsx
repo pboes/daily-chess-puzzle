@@ -320,7 +320,12 @@ function GateContent({
         </p>
         {entry.balanceCrc != null && (
           <p className="text-xs text-[var(--muted-foreground)]">
-            Your balance: {entry.balanceCrc} CRC
+            Spendable: {entry.balanceCrc} gCRC
+            {entry.migratableCrc != null && entry.migratableCrc > 0 && (
+              <span className="block text-[11px] opacity-80">
+                + {entry.migratableCrc} migratable (migrate in the Circles app to use)
+              </span>
+            )}
           </p>
         )}
         <Button

@@ -18,8 +18,10 @@ type EntryPhase =
 interface UseEntryResult {
   phase: EntryPhase;
   entered: boolean;
-  /** Player's spendable group-CRC, formatted. null until checked. */
+  /** Player's directly-spendable group-CRC (held, not migratable). null until checked. */
   balanceCrc: number | null;
+  /** Legacy CRC that's migratable into the group but not yet spendable. */
+  migratableCrc: number | null;
   feeCrc: number;
   error: string | null;
   /** Re-read the on-chain balance. */
@@ -35,6 +37,7 @@ export function useEntry(): UseEntryResult {
   const [phase, setPhase] = React.useState<EntryPhase>("idle");
   const [entered, setEntered] = React.useState(false);
   const [balanceCrc, setBalanceCrc] = React.useState<number | null>(null);
+  const [migratableCrc, setMigratableCrc] = React.useState<number | null>(null);
   const [error, setError] = React.useState<string | null>(null);
 
   const refreshBalance = React.useCallback(async () => {
@@ -42,7 +45,9 @@ export function useEntry(): UseEntryResult {
     try {
       const group = getPermissionlessGroup();
       const bal = await group.balance(address as `0x${string}`);
-      setBalanceCrc(atto(bal.total));
+      // Spendable = what's actually held in the group (NOT migratable legacy CRC).
+      setBalanceCrc(atto(bal.heldTotal));
+      setMigratableCrc(atto(bal.migratable));
     } catch (err) {
       console.warn("[entry] balance read failed:", err);
       setBalanceCrc(null);
@@ -92,11 +97,20 @@ export function useEntry(): UseEntryResult {
 
       setPhase("checking");
       const bal = await group.balance(address as `0x${string}`);
-      setBalanceCrc(atto(bal.total));
-      if (bal.total < ENTRY_FEE_ATTO) {
+      setBalanceCrc(atto(bal.heldTotal));
+      setMigratableCrc(atto(bal.migratable));
+      // Only the held balance can be transferred; migratable legacy CRC must be
+      // migrated into the group first (done in the Circles app).
+      if (bal.heldTotal < ENTRY_FEE_ATTO) {
         setPhase("insufficient");
+        const migHint =
+          bal.migratable > 0n
+            ? ` You have ${atto(bal.migratable)} migratable CRC — migrate it in the Circles app first to use it.`
+            : "";
         setError(
-          `You need ${ENTRY_FEE_CRC} group-CRC to enter, but only ${atto(bal.total)} is available.`
+          `You need ${ENTRY_FEE_CRC} spendable group-CRC to enter, but only ${atto(
+            bal.heldTotal
+          )} is available.${migHint}`
         );
         return;
       }
@@ -154,6 +168,7 @@ export function useEntry(): UseEntryResult {
     phase,
     entered,
     balanceCrc,
+    migratableCrc,
     feeCrc: ENTRY_FEE_CRC,
     error,
     refreshBalance,
