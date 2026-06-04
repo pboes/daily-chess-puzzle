@@ -19,6 +19,7 @@
  * used instead; an in-memory one is the last resort.
  */
 import type { DailyPuzzle } from "@/lib/puzzle";
+import type { LichessConnection } from "@/lib/lichess";
 
 export interface Entry {
   address: string; // lowercased
@@ -61,6 +62,11 @@ export interface StoreBackend {
   /** Lock the puzzle for a day; first writer wins, later writes are ignored. */
   setPuzzle(day: string, puzzle: DailyPuzzle): Promise<DailyPuzzle>;
 
+  /** Linked Lichess account for a Circles address (and the reverse). */
+  getLichess(address: string): Promise<LichessConnection | null>;
+  setLichess(address: string, conn: LichessConnection): Promise<void>;
+  deleteLichess(address: string): Promise<void>;
+
   listDays(): Promise<string[]>;
   isPaidOut(day: string): Promise<boolean>;
   /** Atomically reserve a day for settlement. False if already claimed/paid —
@@ -82,6 +88,7 @@ const K = {
   paid: (d: string) => `dcp:paid:${d}`,
   usedtx: "dcp:usedtx",
   days: "dcp:days",
+  lichess: "dcp:lichess", // hash: address -> LichessConnection
 };
 
 const parse = <T>(v: string | null): T | null => {
@@ -162,6 +169,16 @@ class RedisBackend implements StoreBackend {
     return (await this.getPuzzle(day)) ?? puzzle;
   }
 
+  async getLichess(address: string) {
+    return parse<LichessConnection>(await this.redis.hget(K.lichess, address));
+  }
+  async setLichess(address: string, conn: LichessConnection) {
+    await this.redis.hset(K.lichess, address, JSON.stringify(conn));
+  }
+  async deleteLichess(address: string) {
+    await this.redis.hdel(K.lichess, address);
+  }
+
   async listDays() {
     return await this.redis.smembers(K.days);
   }
@@ -194,8 +211,16 @@ interface Doc {
   puzzles: Record<string, DailyPuzzle>;
   paid: Record<string, Record<string, unknown>>;
   usedtx: string[];
+  lichess: Record<string, LichessConnection>;
 }
-const emptyDoc = (): Doc => ({ entries: {}, attempts: {}, puzzles: {}, paid: {}, usedtx: [] });
+const emptyDoc = (): Doc => ({
+  entries: {},
+  attempts: {},
+  puzzles: {},
+  paid: {},
+  usedtx: [],
+  lichess: {},
+});
 
 abstract class JsonDocBackend implements StoreBackend {
   protected abstract load(): Promise<Doc>;
@@ -287,6 +312,19 @@ abstract class JsonDocBackend implements StoreBackend {
   async markPaidOut(day: string, info: Record<string, unknown>) {
     await this.mutate((d) => {
       d.paid[day] = info;
+    });
+  }
+  async getLichess(address: string) {
+    return (await this.load()).lichess[address] ?? null;
+  }
+  async setLichess(address: string, conn: LichessConnection) {
+    await this.mutate((d) => {
+      d.lichess[address] = conn;
+    });
+  }
+  async deleteLichess(address: string) {
+    await this.mutate((d) => {
+      delete d.lichess[address];
     });
   }
 }

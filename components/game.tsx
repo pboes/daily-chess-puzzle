@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { ChessBoard } from "@/components/chess/chess-board";
 import { PuzzleHud } from "@/components/chess/puzzle-hud";
 import { Leaderboard } from "@/components/leaderboard";
+import { LichessConnect } from "@/components/lichess-connect";
 import { useWallet } from "@/components/wallet/wallet-provider";
 import { useEntry } from "@/hooks/use-entry";
 import { useChessPuzzle } from "@/hooks/use-chess-puzzle";
@@ -252,6 +253,7 @@ export function Game() {
       {/* ---- Side column ---- */}
       <div className="space-y-5">
         <Leaderboard address={address} refreshKey={lbKey} pendingMe={pendingMe} />
+        <LichessConnect />
       </div>
 
       <HowToPlayModal open={howto.open} onClose={howto.close} />
