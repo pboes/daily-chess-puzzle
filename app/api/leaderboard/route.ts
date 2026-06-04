@@ -1,7 +1,8 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import { getAddress } from "viem";
 import { getStore } from "@/lib/server/store";
 import { getPotCrc } from "@/lib/server/pot";
+import { maybeSettleStaleDays } from "@/lib/server/settle";
 import { todayKey } from "@/lib/utils";
 import { ENTRY_FEE_CRC } from "@/lib/circles-config";
 
@@ -10,10 +11,12 @@ export const maxDuration = 60;
 
 /** GET ?address=0x... → today's ranking, pot size, and the caller's standing. */
 export async function GET(req: Request) {
-  // NOTE: settlement is intentionally NOT run here. Doing it on every 15s
-  // leaderboard poll meant the (whole-doc) settlement writes raced and clobbered
-  // attempt writes at the day boundary. Settlement runs via the cron / admin
-  // endpoint instead.
+  // Lazily settle any unsettled past day after the response is sent, so the
+  // winner is paid from normal usage even if the cron misses. Safe now that the
+  // store is atomic: `claimDay` (SET NX) makes settlement exactly-once and
+  // per-key writes can't clobber attempts.
+  after(() => maybeSettleStaleDays());
+
   const store = getStore();
   const day = todayKey();
 

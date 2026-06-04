@@ -17,6 +17,7 @@
     "@aboutcircles/sdk-runner": "^0.1.43",
     "@aboutcircles/sdk-utils": "^0.1.43",
     "@radix-ui/react-slot": "^1.1.1",
+    "@upstash/redis": "^1.38.0",
     "@vercel/blob": "^2.4.0",
     "chess.js": "^1.4.0",
     "class-variance-authority": "^0.7.1",
