@@ -10,10 +10,10 @@
  *   usedtx           set   entry-payment tx hashes already consumed
  *   days             set   every day key we've touched
  *
- * In production this is **Upstash Redis**, so every write is an atomic per-key
- * operation (`HSET`, `HSETNX`, `SET NX`, `SADD`) — writes never read-modify-write
- * the whole world, so they can't clobber each other across serverless instances,
- * and `claimDay` (`SET NX`) makes settlement exactly-once.
+ * In production this is **Redis** (via `REDIS_URL`), so every write is an atomic
+ * per-key operation (`HSET`, `HSETNX`, `SET NX`, `SADD`) — writes never
+ * read-modify-write the whole world, so they can't clobber each other across
+ * serverless instances, and `claimDay` (`SET NX`) makes settlement exactly-once.
  *
  * For local `pnpm dev` (single process, no concurrency) a JSON file backend is
  * used instead; an in-memory one is the last resort.
@@ -73,7 +73,7 @@ export interface StoreBackend {
 
 // ─────────────────────────────── Redis ───────────────────────────────
 
-import { Redis } from "@upstash/redis";
+import IORedis from "ioredis";
 
 const K = {
   entries: (d: string) => `dcp:entries:${d}`,
@@ -84,37 +84,33 @@ const K = {
   days: "dcp:days",
 };
 
-/** Upstash auto-(de)serializes JSON; normalize whatever comes back to T|null. */
-function asObj<T>(v: unknown): T | null {
+const parse = <T>(v: string | null): T | null => {
   if (v == null) return null;
-  if (typeof v === "string") {
-    try {
-      return JSON.parse(v) as T;
-    } catch {
-      return null;
-    }
+  try {
+    return JSON.parse(v) as T;
+  } catch {
+    return null;
   }
-  return v as T;
-}
+};
 
 class RedisBackend implements StoreBackend {
-  private redis: Redis;
-  constructor(redis: Redis) {
+  private redis: IORedis;
+  constructor(redis: IORedis) {
     this.redis = redis;
   }
 
   async addEntry(day: string, entry: Entry) {
     await Promise.all([
-      this.redis.hset(K.entries(day), { [entry.address]: entry }),
+      this.redis.hset(K.entries(day), entry.address, JSON.stringify(entry)),
       this.redis.sadd(K.days, day),
     ]);
   }
   async getEntry(day: string, address: string) {
-    return asObj<Entry>(await this.redis.hget(K.entries(day), address));
+    return parse<Entry>(await this.redis.hget(K.entries(day), address));
   }
   async listEntries(day: string) {
-    const all = (await this.redis.hgetall<Record<string, unknown>>(K.entries(day))) ?? {};
-    return Object.values(all).map((v) => asObj<Entry>(v)).filter((v): v is Entry => !!v);
+    const all = await this.redis.hgetall(K.entries(day));
+    return Object.values(all).map((v) => parse<Entry>(v)).filter((v): v is Entry => !!v);
   }
 
   async isTxUsed(txHash: string) {
@@ -127,12 +123,12 @@ class RedisBackend implements StoreBackend {
   async startAttempt(day: string, address: string, startedAt: number) {
     const attempt: Attempt = { address, startedAt, status: "started" };
     // HSETNX → only creates when absent, so concurrent/replayed starts are safe.
-    await this.redis.hsetnx(K.attempts(day), address, attempt);
+    await this.redis.hsetnx(K.attempts(day), address, JSON.stringify(attempt));
     await this.redis.sadd(K.days, day);
     return (await this.getAttempt(day, address)) ?? attempt;
   }
   async getAttempt(day: string, address: string) {
-    return asObj<Attempt>(await this.redis.hget(K.attempts(day), address));
+    return parse<Attempt>(await this.redis.hget(K.attempts(day), address));
   }
   async finishAttempt(
     day: string,
@@ -149,38 +145,42 @@ class RedisBackend implements StoreBackend {
       lives: outcome.lives,
       ...(outcome.solved ? { timeMs: outcome.finishedAt - a.startedAt } : {}),
     };
-    await this.redis.hset(K.attempts(day), { [address]: finished });
+    await this.redis.hset(K.attempts(day), address, JSON.stringify(finished));
     return finished;
   }
   async listAttempts(day: string) {
-    const all = (await this.redis.hgetall<Record<string, unknown>>(K.attempts(day))) ?? {};
-    return Object.values(all).map((v) => asObj<Attempt>(v)).filter((v): v is Attempt => !!v);
+    const all = await this.redis.hgetall(K.attempts(day));
+    return Object.values(all).map((v) => parse<Attempt>(v)).filter((v): v is Attempt => !!v);
   }
 
   async getPuzzle(day: string) {
-    return asObj<DailyPuzzle>(await this.redis.get(K.puzzle(day)));
+    return parse<DailyPuzzle>(await this.redis.get(K.puzzle(day)));
   }
   async setPuzzle(day: string, puzzle: DailyPuzzle) {
-    await this.redis.set(K.puzzle(day), puzzle, { nx: true });
+    await this.redis.set(K.puzzle(day), JSON.stringify(puzzle), "NX");
     await this.redis.sadd(K.days, day);
     return (await this.getPuzzle(day)) ?? puzzle;
   }
 
   async listDays() {
-    return (await this.redis.smembers(K.days)) ?? [];
+    return await this.redis.smembers(K.days);
   }
   async isPaidOut(day: string) {
     return (await this.redis.exists(K.paid(day))) === 1;
   }
   async claimDay(day: string, now: number) {
-    const res = await this.redis.set(K.paid(day), { settling: true, at: now }, { nx: true });
+    const res = await this.redis.set(
+      K.paid(day),
+      JSON.stringify({ settling: true, at: now }),
+      "NX"
+    );
     return res === "OK";
   }
   async unclaimDay(day: string) {
     await this.redis.del(K.paid(day));
   }
   async markPaidOut(day: string, info: Record<string, unknown>) {
-    await this.redis.set(K.paid(day), info);
+    await this.redis.set(K.paid(day), JSON.stringify(info));
   }
 }
 
@@ -326,14 +326,23 @@ class MemoryBackend extends JsonDocBackend {
 // ─────────────────────────── selection ───────────────────────────
 
 let backend: StoreBackend | null = null;
+// Module-level so the TCP connection is reused across requests on a warm
+// (Fluid Compute) instance instead of reconnecting per invocation.
+let redisClient: IORedis | null = null;
 
-function redisFromEnv(): Redis | null {
-  // Works with the Vercel "Upstash for Redis" integration (KV_REST_API_*) and
-  // a manual Upstash setup (UPSTASH_REDIS_REST_*).
-  const url = process.env.KV_REST_API_URL ?? process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
-  if (!url || !token) return null;
-  return new Redis({ url, token });
+function redisFromEnv(): IORedis | null {
+  const url =
+    process.env.REDIS_URL ?? process.env.KV_URL ?? process.env.UPSTASH_REDIS_URL;
+  if (!url) return null;
+  if (!redisClient) {
+    redisClient = new IORedis(url, {
+      maxRetriesPerRequest: 3,
+      enableReadyCheck: true,
+    });
+    // ioredis auto-reconnects; just keep the 'error' event from going unhandled.
+    redisClient.on("error", (e) => console.warn("[redis]", e?.message ?? e));
+  }
+  return redisClient;
 }
 
 export function getStore(): StoreBackend {
