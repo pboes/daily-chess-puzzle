@@ -61,6 +61,18 @@ export function LichessConnect() {
     if (!address) return;
     setError(null);
 
+    // Open the consent popup *synchronously* on the click so the browser keeps
+    // the user-gesture. Opening it after an await (e.g. signing first) is what
+    // gets popups blocked even on hosts that allow them — a false negative.
+    const popup = window.open("about:blank", "lichess-oauth", "width=480,height=720");
+    if (!popup) {
+      setError(
+        "Your Circles host blocked the Lichess sign-in window. We'll switch to the tab-based flow."
+      );
+      setPhase("error");
+      return;
+    }
+
     // ── Circles side: prove the address by signing (host only). ──
     const nonce = randomString(8);
     const message = `Link my Lichess account to Circles ${address}\nnonce: ${nonce}`;
@@ -70,13 +82,14 @@ export function LichessConnect() {
       try {
         signature = (await signMessage(message)).signature;
       } catch {
+        popup.close();
         setError("Wallet signature was declined.");
         setPhase("error");
         return;
       }
     }
 
-    // ── Lichess side: open the OAuth consent popup (PKCE). ──
+    // ── Lichess side: drive the already-open popup to the OAuth consent (PKCE). ──
     const verifier = randomString(32);
     const challenge = await pkceChallenge(verifier);
     const state = randomString(16);
@@ -84,12 +97,7 @@ export function LichessConnect() {
     const authUrl = buildAuthorizeUrl({ challenge, state, redirectUri });
 
     setPhase("authorizing");
-    const popup = window.open(authUrl, "lichess-oauth", "width=480,height=720");
-    if (!popup) {
-      setError("Popup blocked — allow popups for this site and try again.");
-      setPhase("error");
-      return;
-    }
+    popup.location.href = authUrl;
 
     const onMessage = async (ev: MessageEvent) => {
       if (ev.origin !== window.location.origin) return;
